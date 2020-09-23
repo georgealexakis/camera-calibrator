@@ -2,6 +2,12 @@
 
 Camera Calibrator is a tiny Python script that performs geometric camera calibration. It uses the default web-camera of the computer. The basic usage is for experimental purposes and it can display the computed parameters. Numpy and OpenCV are used for the developement.
 
+## Permissions
+
+Change the permissions of the python file with the command below:
+
+`$ chmod +x camera-calibrator.py`
+
 ## Menu Options
 
 * 99 - 'c': Calibration points capturing process is on/off.
