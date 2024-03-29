@@ -8,6 +8,8 @@ from PIL import Image, ImageTk
 import threading
 import numpy as np
 import glob
+import time
+import math
 
 
 class CalibratorGui(Tk):
@@ -56,14 +58,22 @@ class CalibratorGui(Tk):
     # App status
     is_playing = False
     is_camera_ready = False
+    was_playing = False
     buttons = [None] * 11
     buttons_status = ['disabled'] * 11
+    # Click points
+    image_clicks = []
 
     def __init__(self):
         super().__init__()
         # Creating main tkinter window/toplevel
         self.title('Camera Calibrator')
         self.geometry('1000x650')
+        self.width = 800
+        self.height = 600
+        self.bind('<Configure>', self.resize)
+        self.paused = False
+        self.id = None
         # Buttons frame
         buttons_frame = ttk.LabelFrame(self, text='Controls')
         buttons_frame.pack(side=LEFT, fill=BOTH, padx=5, pady=5)
@@ -72,6 +82,38 @@ class CalibratorGui(Tk):
         # Image frame
         image_frame = ttk.LabelFrame(self, text='Image')
         image_frame.pack(side=TOP, fill=BOTH, padx=5, pady=5)
+        # Bottom frame
+        btm_frame = ttk.LabelFrame(self, text='Stats')
+        btm_frame.pack(side=BOTTOM, fill=BOTH, padx=5, pady=5)
+        self.pixel_vars = [DoubleVar(), DoubleVar(), DoubleVar(), DoubleVar()]
+        lp_1 = ttk.Label(
+            btm_frame,
+            textvariable=self.pixel_vars[0],
+            width=20,
+            anchor=E
+        )
+        lp_1.grid(row=0, column=0, sticky=E, pady=2)
+        lp_2 = ttk.Label(
+            btm_frame,
+            textvariable=self.pixel_vars[1],
+            width=20,
+            anchor=E
+        )
+        lp_2.grid(row=0, column=1, sticky=E, pady=2)
+        lp_3 = ttk.Label(
+            btm_frame,
+            textvariable=self.pixel_vars[2],
+            width=20,
+            anchor=E
+        )
+        lp_3.grid(row=0, column=2, sticky=E, pady=2)
+        lp_4 = ttk.Label(
+            btm_frame,
+            textvariable=self.pixel_vars[3],
+            width=20,
+            anchor=E
+        )
+        lp_4.grid(row=0, column=3, sticky=E, pady=2)
         # This will create a label widget
         self.camera_status = StringVar()
         self.camera_status.set('waiting...')
@@ -107,13 +149,32 @@ class CalibratorGui(Tk):
             anchor=E
         )
         l2_t.grid(row=2, column=1, sticky=E, pady=2)
-        # Button widget
+        # Select dimensions
+        l_dim = ttk.Label(buttons_frame, text='Select dimensions:')
+        l_dim.grid(row=3, column=0, sticky=NSEW, pady=2)
+        # Combobox creation
+        self.current_dimension = StringVar()
+        self.camera_dimensions = ttk.Combobox(
+            buttons_frame, width=15, state='disabled', textvariable=self.current_dimension
+        )
+        self.camera_dimensions.bind(
+            '<<ComboboxSelected>>', self.change_dimensions
+        )
+        # Adding combobox drop down list
+        self.camera_dimensions['values'] = (
+            '640x480',
+            '848x480',
+            '1280x720'
+        )
+        self.camera_dimensions.grid(row=3, column=1, sticky=E, pady=2)
+        self.camera_dimensions.current(0)
         ttk.Separator(buttons_frame, orient='horizontal').grid(
             row=4,
             columnspan=2,
             sticky=NSEW,
             pady=5
         )
+        # Button widget
         self.buttons[0] = ttk.Button(
             buttons_frame,
             text='Start Camera',
@@ -203,12 +264,23 @@ class CalibratorGui(Tk):
             state=self.buttons_status[9]
         )
         self.buttons[10].grid(row=14, column=1, sticky=NSEW, pady=2)
+        ttk.Separator(buttons_frame, orient='horizontal').grid(
+            row=15,
+            columnspan=2,
+            sticky=NSEW,
+            pady=5
+        )
+        self.params_text = Text(buttons_frame, height=15, width=10)
+        self.params_text.config(font=('Courier', 9))
+        self.params_text.grid(
+            row=16, columnspan=2, column=0, sticky=NSEW, pady=2
+        )
         # Bind the app with Escape keyboard to quit app whenever pressed
         self.bind('<Escape>', lambda e: self.quit())
         # Create a label and display it on app
         self.label_widget = Label(image_frame)
         self.label_widget.pack(padx=10, pady=10)
-        opencv_image = np.zeros((600, 800, 3), dtype=np.uint8)
+        opencv_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         captured_image = Image.fromarray(opencv_image)
         # Convert captured image to photoimage
         photo_image = ImageTk.PhotoImage(image=captured_image)
@@ -216,10 +288,24 @@ class CalibratorGui(Tk):
         self.label_widget.photo_image = photo_image
         # Configure image in the label
         self.label_widget.configure(image=photo_image)
+        self.label_widget.bind('<Button-1>', self.get_pixel)
+        self.label_widget.bind('<Motion>', self.hover_img)
         # Camera thread
         cam_thread = threading.Thread(target=lambda: self.init_camera())
         cam_thread.daemon = True
         cam_thread.start()
+
+    def resize(self, state):
+        if (self.id != None and self.paused == False):
+            self.label_widget.after_cancel(self.id)
+            self.paused = True
+            self.paused_time = time.time()
+            self.after(1000, self.controller)
+
+    def controller(self):
+        if (self.paused):
+            self.open_camera()
+            self.paused = False
 
     def init_camera(self):
         # Set message
@@ -227,15 +313,91 @@ class CalibratorGui(Tk):
         # Define a video capture object
         self.vid = cv2.VideoCapture(0)
         # Declare the width and height in variables
-        width, height = 800, 600
-        # Set the width and height
-        self.vid.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self.vid.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.width = int(self.vid.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.height = int(self.vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        c_dim = f'{int(self.width)}x{int(self.height)}'
+        if (c_dim not in self.camera_dimensions['values']):
+            self.camera_dimensions['values'] = (
+                *self.camera_dimensions['values'], c_dim
+            )
+        self.current_dimension.set(c_dim)
         self.is_camera_ready = True
         self.camera_status.set('connected')
+        self.camera_dimensions.config(state='readonly')
         for i in range(len(self.buttons)):
             self.buttons_status[i] = '!disabled'
             self.buttons[i].config(state=self.buttons_status[i])
+
+    def get_pixel(self, values):
+        self.pixel_vars[0].set('x: ' + str(values.x))
+        self.pixel_vars[1].set('y: ' + str(values.y))
+        if (len(self.image_clicks) < 2):
+            self.params_text.delete(1.0, END)
+            self.image_clicks.append([values.x, values.y])
+            self.params_text.insert(END, self.image_clicks)
+        else:
+            self.image_clicks = []
+            self.params_text.delete(1.0, END)
+        self.measure_distance()
+
+    def measure_distance(self):
+        # Measure it first
+        pixels_per_metric = 100 / 30
+        if (len(self.image_clicks) == 2):
+            dist_pixels = math.sqrt(
+                (self.image_clicks[1][0] - self.image_clicks[0][0])**2 +
+                (self.image_clicks[1][1] - self.image_clicks[0][1])**2
+            )
+            dist_mm = dist_pixels/pixels_per_metric
+            self.params_text.delete(1.0, END)
+            self.params_text.insert(
+                END, 'Measured pixels\n'
+            )
+            self.params_text.insert(
+                END, f'from : {self.image_clicks[0]}\n'
+            )
+            self.params_text.insert(
+                END, f'to : {self.image_clicks[1]}\n'
+            )
+            self.params_text.insert(
+                END, f'distance pixels : {round(dist_pixels, 3)}\n'
+            )
+            self.params_text.insert(
+                END, f'distance mm : {round(dist_mm, 3)}\n'
+            )
+
+    def hover_img(self, values):
+        self.pixel_vars[2].set('x: ' + str(values.x))
+        self.pixel_vars[3].set('y: ' + str(values.y))
+
+    def change_dimensions(self, option):
+        c_thr = threading.Thread(target=lambda: self.change_it())
+        c_thr.daemon = True
+        c_thr.start()
+
+    def change_it(self):
+        self.camera_dimensions.config(state='disabled')
+        for i in range(len(self.buttons)):
+            self.buttons_status[i] = 'disabled'
+            self.buttons[i].config(state=self.buttons_status[i])
+        # Define a video capture object
+        dim = self.current_dimension.get()
+        x = dim.split('x')
+        self.width, self.height = int(x[0]), int(x[1])
+        self.stop_camera(self.was_playing)
+        # Set the width and height
+        self.vid = cv2.VideoCapture(0)
+        self.vid.set(cv2.CAP_PROP_FRAME_WIDTH, int(x[0]))
+        self.vid.set(cv2.CAP_PROP_FRAME_HEIGHT, int(x[1]))
+        print(int(self.vid.get(cv2.CAP_PROP_FRAME_WIDTH)),
+              int(self.vid.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        self.camera_dimensions.config(state='readonly')
+        for i in range(len(self.buttons)):
+            self.buttons_status[i] = '!disabled'
+            self.buttons[i].config(state=self.buttons_status[i])
+        # Start again
+        if (self.was_playing):
+            self.start_camera()
 
     def check_images(self):
         path = './images/'
@@ -259,11 +421,14 @@ class CalibratorGui(Tk):
 
     def start_camera(self):
         if (not self.is_playing):
+            if (self.vid.read()[0] == False):
+                self.vid = cv2.VideoCapture(0)
             self.is_playing = True
+            self.was_playing = True
             self.open_camera()
 
     def open_camera(self):
-        if (self.is_camera_ready):
+        if (self.is_camera_ready and self.is_playing):
             # Capture the video frame by frame
             _, frame = self.vid.read()
             # Main processing
@@ -284,12 +449,16 @@ class CalibratorGui(Tk):
             self.label_widget.photo_image = photo_image
             # Configure image in the label
             self.label_widget.configure(image=photo_image)
-            # Repeat the same process after every 10 seconds
+            # Repeat the same process after every 10 milliseconds
             self.id = self.label_widget.after(10, self.open_camera)
 
-    def stop_camera(self):
+    def stop_camera(self, state=False):
         self.is_playing = False
-        opencv_image = np.zeros((600, 800, 3), dtype=np.uint8)
+        if (state):
+            self.was_playing = True
+        else:
+            self.was_playing = False
+        opencv_image = np.zeros((self.height, self.width, 3), dtype=np.uint8)
         captured_image = Image.fromarray(opencv_image)
         # Convert captured image to photoimage
         photo_image = ImageTk.PhotoImage(image=captured_image)
@@ -299,6 +468,7 @@ class CalibratorGui(Tk):
         self.label_widget.configure(image=photo_image)
         try:
             self.label_widget.after_cancel(self.id)
+            self.vid.release()
         except:
             pass
 
@@ -322,6 +492,11 @@ class CalibratorGui(Tk):
             print(self.mtx)
             print('------------Distortion coefficients------------')
             print(self.dist)
+            self.params_text.delete(1.0, END)
+            self.params_text.insert(END, 'Camera matrix\n\n')
+            self.params_text.insert(END, self.mtx)
+            self.params_text.insert(END, '\n\nDistortion coefficients\n\n')
+            self.params_text.insert(END, self.dist)
 
     def perform_offline_process(self):
         # Set message
